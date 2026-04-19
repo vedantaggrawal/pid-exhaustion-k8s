@@ -1,0 +1,139 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pid-exhaustion
+---
+# ============================================================
+# Pod 1: Process Leak (busybox)
+# Spawns sleep processes that never exit.
+# Each one holds a real PID slot. No reaping matters here —
+# they're ALIVE, not zombies. PID slots fill up.
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: process-leak
+  namespace: pid-exhaustion
+  labels:
+    demo: pid-exhaustion
+spec:
+  containers:
+  - name: leak
+    image: busybox:1.37
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      echo "=== Process Leak: spawning immortal sleep processes ==="
+      echo "PID 1 = sh (no init). Each 'sleep' holds a PID slot forever."
+      count=0
+      while true; do
+        sleep 999999 &
+        count=$((count + 1))
+        if [ $((count % 10)) -eq 0 ]; then
+          t=$(ps 2>/dev/null | wc -l)
+          echo "[process-leak] spawned=$count  live_procs=$t"
+        fi
+        sleep 0.1
+      done
+    resources:
+      limits:
+        memory: "64Mi"
+        cpu: "200m"
+  terminationGracePeriodSeconds: 3
+---
+# ============================================================
+# Pod 2: True Zombie Factory (python)
+# Python os.fork() — parent NEVER calls os.wait().
+# Children exit immediately and become real zombies (Z state).
+# Zombies accumulate because no init system reaps them.
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zombie-factory
+  namespace: pid-exhaustion
+  labels:
+    demo: pid-exhaustion
+spec:
+  containers:
+  - name: zombies
+    image: python:3.13-slim
+    command: ["python3", "-u", "-c"]
+    args:
+    - |
+      import os, time
+
+      print("=== Zombie Factory: python as PID 1 (no init) ===")
+      print(f"PID 1 = python (pid {os.getpid()}). Children exit, parent never wait()s.")
+
+      count = 0
+      while True:
+          try:
+              pid = os.fork()
+              if pid == 0:
+                  # Child: exit immediately -> becomes zombie
+                  os._exit(0)
+              # Parent: never calls os.wait() -> zombie accumulates
+              count += 1
+              if count % 10 == 0:
+                  # Count zombies via /proc
+                  zombies = 0
+                  total = 0
+                  try:
+                      for entry in os.listdir('/proc'):
+                          if entry.isdigit():
+                              total += 1
+                              try:
+                                  with open(f'/proc/{entry}/stat') as f:
+                                      stat = f.read()
+                                      if ') Z' in stat:
+                                          zombies += 1
+                              except (FileNotFoundError, PermissionError):
+                                  pass
+                  except Exception:
+                      pass
+                  print(f"[zombie-factory] forked={count}  zombies={zombies}  total_procs={total}")
+              time.sleep(0.05)
+          except OSError as e:
+              print(f"[zombie-factory] fork() FAILED: {e} (PID exhaustion!)")
+              print(f"[zombie-factory] final count: forked={count}")
+              time.sleep(5)
+    resources:
+      limits:
+        memory: "128Mi"
+        cpu: "200m"
+  terminationGracePeriodSeconds: 3
+---
+# ============================================================
+# Pod 3: Innocent Bystander
+# A normal pod on the same node. If node PIDs exhaust,
+# this pod's processes will also fail to fork.
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: innocent-bystander
+  namespace: pid-exhaustion
+  labels:
+    demo: pid-exhaustion
+spec:
+  containers:
+  - name: app
+    image: busybox:1.37
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      echo "=== Innocent Bystander: normal healthy pod ==="
+      while true; do
+        # Try to fork a simple command every 3 seconds
+        if /bin/sh -c 'echo ok' >/dev/null 2>&1; then
+          echo "[bystander] fork works fine - $(date)"
+        else
+          echo "[bystander] FORK FAILED! PID exhaustion hit me! - $(date)"
+        fi
+        sleep 3
+      done
+    resources:
+      limits:
+        memory: "32Mi"
+        cpu: "50m"
