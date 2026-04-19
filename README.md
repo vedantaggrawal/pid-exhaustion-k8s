@@ -4,6 +4,9 @@
 
 A reproducible lab that demonstrates PID exhaustion in Kubernetes using a Kind cluster. Covers zombie processes, process leaks, PID namespace vs cgroup isolation, and why running containers without a proper init system is a ticking time bomb.
 
+**GitHub**: [vedantaggrawal/pid-exhaustion-k8s](https://github.com/vedantaggrawal/pid-exhaustion-k8s)  
+**LinkedIn write-up**: Coming soon
+
 ## What This Lab Demonstrates
 
 | Pod | Mechanism | What Breaks |
